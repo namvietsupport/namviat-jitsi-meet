@@ -1,0 +1,57 @@
+variables:
+  CONTAINER_VERSIONED_IMAGE_PRODUCTION: $CI_REGISTRY_IMAGE:$CI_PIPELINE_ID
+  CONTAINER_RELEASE_IMAGE_PRODUCTION: $CI_REGISTRY_IMAGE:latest
+
+stages:
+  - build
+  - deploy-registry
+  - deploy-kube
+
+make_and_package:
+  stage: build
+  environment:
+    name: production
+  image: node:16-bullseye-slim
+  script:
+    - apt update && apt install -y make bzip2
+    - npm install
+    - make
+    - make source-package
+  artifacts:
+    paths:
+      - jitsi-meet.tar.bz2
+  only:
+    - master
+
+push_image_to_registry:
+  stage: deploy-registry
+  environment:
+    name: production
+  image: docker/compose:1.27.0
+  services:
+    - docker:19.03.12-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $CONTAINER_RELEASE_IMAGE_PRODUCTION -t $CONTAINER_VERSIONED_IMAGE_PRODUCTION .
+    - docker push $CONTAINER_RELEASE_IMAGE_PRODUCTION
+    - docker push $CONTAINER_VERSIONED_IMAGE_PRODUCTION
+  only:
+    - master
+
+update_kube_cluster:
+  stage: deploy-kube
+  environment:
+    name: production
+  image: meetrix/docker-sshd
+  before_script:
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - ssh $SSH_USER@$SSH_HOST "kubectl rollout restart deployment jitsi-meet -njitsi"
+  only:
+    - master
